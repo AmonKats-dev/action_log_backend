@@ -7,15 +7,31 @@ logger = logging.getLogger(__name__)
 
 class SMSNotificationService:
     def __init__(self):
-        self.client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        self.from_number = settings.TWILIO_PHONE_NUMBER
-        logger.info("SMS notification service initialized")
+        # Check if Twilio credentials are available
+        account_sid = getattr(settings, 'TWILIO_ACCOUNT_SID', None)
+        auth_token = getattr(settings, 'TWILIO_AUTH_TOKEN', None)
+        self.from_number = getattr(settings, 'TWILIO_PHONE_NUMBER', None)
+        
+        if account_sid and auth_token:
+            try:
+                self.client = Client(account_sid, auth_token)
+                logger.info("SMS notification service initialized with Twilio credentials")
+            except Exception as e:
+                logger.error(f"Failed to initialize Twilio client: {str(e)}")
+                self.client = None
+        else:
+            logger.warning("Twilio credentials not found - SMS notifications disabled")
+            self.client = None
 
     def send_notification(self, to_number, message):
         """
         Send SMS notification using Twilio.
         Handles rate limiting and other errors gracefully.
         """
+        if not self.client:
+            logger.warning(f"SMS client not available - skipping notification to {to_number}")
+            return False
+            
         try:
             message = self.client.messages.create(
                 body=message,
@@ -36,11 +52,27 @@ class SMSNotificationService:
 
 class WhatsAppNotificationService:
     def __init__(self):
-        self.client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        self.from_number = settings.TWILIO_PHONE_NUMBER
-        logger.info("WhatsApp notification service initialized")
+        # Check if Twilio credentials are available
+        account_sid = getattr(settings, 'TWILIO_ACCOUNT_SID', None)
+        auth_token = getattr(settings, 'TWILIO_AUTH_TOKEN', None)
+        self.from_number = getattr(settings, 'TWILIO_PHONE_NUMBER', None)
+        
+        if account_sid and auth_token:
+            try:
+                self.client = Client(account_sid, auth_token)
+                logger.info("WhatsApp notification service initialized with Twilio credentials")
+            except Exception as e:
+                logger.error(f"Failed to initialize Twilio client for WhatsApp: {str(e)}")
+                self.client = None
+        else:
+            logger.warning("Twilio credentials not found - WhatsApp notifications disabled")
+            self.client = None
 
     def send_notification(self, to_number, message):
+        if not self.client:
+            logger.warning(f"WhatsApp client not available - skipping notification to {to_number}")
+            return False
+            
         try:
             # Format the phone numbers for WhatsApp
             # Ensure from_number has country code
