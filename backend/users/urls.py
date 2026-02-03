@@ -18,4 +18,5 @@ urlpatterns = [
     # Add department-related endpoints
     path('department_users/', UserViewSet.as_view({'get': 'department_users'}), name='department-users'),
     path('department_unit_users/', UserViewSet.as_view({'get': 'department_unit_users'}), name='department-unit-users'),
+    path('assignable_users/', UserViewSet.as_view({'get': 'assignable_users'}), name='assignable-users'),
 ] 

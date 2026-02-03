@@ -195,16 +195,25 @@ class ActionLogViewSet(viewsets.ModelViewSet):
         
         # ... (rest of assignment logic unchanged) ...
         if 'assigned_to' in request.data:
+            assigned_ids = request.data['assigned_to']
+            instance.assigned_to.set(assigned_ids)
+            # Auto-select team leader: first in list when 2+ assignees
+            if len(assigned_ids) >= 2:
+                instance.team_leader_id = assigned_ids[0]
+                instance.save(update_fields=['team_leader'])
+            else:
+                instance.team_leader = None
+                instance.save(update_fields=['team_leader'])
             assignment_history = ActionLogAssignmentHistory.objects.create(
                 action_log=instance,
                 assigned_by=request.user,
                 comment=comment_text
             )
-            assignment_history.assigned_to.set(request.data['assigned_to'])
-            assignee_names = [User.objects.get(id=user_id).get_full_name() for user_id in request.data['assigned_to']]
+            assignment_history.assigned_to.set(assigned_ids)
+            assignee_names = [User.objects.get(id=user_id).get_full_name() for user_id in assigned_ids]
             assignees_text = ", ".join(assignee_names)
             sms_service = SMSNotificationService()
-            for user_id in request.data['assigned_to']:
+            for user_id in assigned_ids:
                 try:
                     user = User.objects.get(id=user_id)
                     if user.phone_number:

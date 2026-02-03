@@ -36,6 +36,7 @@ class ActionLog(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='open')
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='Medium')
     due_date = models.DateTimeField(null=True, blank=True)
+    entry_date = models.DateTimeField(null=True, blank=True, help_text='Entry date from source document (PAP); used for "Entry Date" display.')
     assigned_to = models.ManyToManyField(User, related_name='assigned_logs')
     team_leader = models.ForeignKey(
         User, 
@@ -58,6 +59,11 @@ class ActionLog(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     closure_approval_stage = models.CharField(max_length=32, choices=CLOSURE_STAGE_CHOICES, default='none')
     closure_requested_by = models.ForeignKey(User, null=True, blank=True, related_name='closure_requests', on_delete=models.SET_NULL)
+    current_update = models.TextField(
+        null=True,
+        blank=True,
+        help_text='Current status/update for this action (PAP "Current Update/date" column); shown in view modal comment section.'
+    )
 
     class Meta:
         ordering = ['-created_at']
@@ -103,6 +109,8 @@ class ActionLogComment(models.Model):
     is_approved = models.BooleanField(default=False)
     is_viewed = models.BooleanField(default=False)
     parent_comment = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies')
+    # When True, this comment holds the "Current update" (PAP Current Update/date) for the action log; shown under Comments in view modal
+    is_current_update = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-created_at']

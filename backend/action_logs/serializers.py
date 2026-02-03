@@ -9,6 +9,21 @@ from django.conf import settings
 
 User = get_user_model()
 
+
+class MinimalUserSerializer(serializers.ModelSerializer):
+    """Minimal user representation for assignment history; avoids full UserSerializer and its delegation/approver logic."""
+    class Meta:
+        model = User
+        fields = ['id', 'first_name', 'last_name', 'email']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance is None:
+            return None
+        if not data.get('email'):
+            data['email'] = ''
+        return data
+
 class ActionLogSerializer(serializers.ModelSerializer):
     created_by = UserSerializer(read_only=True)
     approved_by = UserSerializer(read_only=True)
@@ -35,10 +50,10 @@ class ActionLogSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'department', 'department_id',
             'created_by', 'created_by_department_unit', 'status', 'priority', 
-            'due_date', 'assigned_to', 'team_leader', 'approved_by', 'approved_at', 
+            'due_date', 'entry_date', 'assigned_to', 'team_leader', 'approved_by', 'approved_at', 
             'rejection_reason', 'created_at', 'updated_at', 'can_approve', 
             'comment_count', 'closure_approval_stage', 'closure_requested_by',
-            'original_assigner'
+            'original_assigner', 'current_update'
         ]
         read_only_fields = [
             'created_by', 'approved_by', 'approved_at',
@@ -79,6 +94,13 @@ class ActionLogSerializer(serializers.ModelSerializer):
             print(f"Error getting original assigner: {str(e)}")
         return None
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Default current_update to "No update yet" when empty (backend default)
+        if not (data.get('current_update') or '').strip():
+            data['current_update'] = 'No update yet'
+        return data
+
     def create(self, validated_data):
         print(f"[SERIALIZER] create: Starting creation with validated_data: {validated_data}")
         request = self.context.get('request')
@@ -118,11 +140,13 @@ class ActionLogSerializer(serializers.ModelSerializer):
             instance.assigned_to.set(assigned_to)
             print(f"[SERIALIZER] create: Set assigned_to: {list(instance.assigned_to.values_list('id', flat=True))}")
         
-        # Set the team_leader if provided
+        # Set the team_leader: use provided value or auto-select first assignee when 2+
         if team_leader:
             instance.team_leader = team_leader
-            print(f"[SERIALIZER] create: Set team_leader to: {team_leader.id}")
-            instance.save()
+        elif len(assigned_to) >= 2 and assigned_to:
+            instance.team_leader = assigned_to[0]
+        if instance.team_leader_id:
+            instance.save(update_fields=['team_leader'])
         
         return instance
 
@@ -131,18 +155,16 @@ class ActionLogSerializer(serializers.ModelSerializer):
         print(f"[SERIALIZER] validate: Data keys: {list(data.keys())}")
         print(f"[SERIALIZER] validate: Data types: {[(k, type(v)) for k, v in data.items()]}")
         
-        # Validate team leader when there are 2+ assignees
+        # Auto-select team leader when there are 2+ assignees: use first in list if not provided
         assigned_to = data.get('assigned_to', [])
         team_leader = data.get('team_leader')
         
         if len(assigned_to) >= 2:
-            if not team_leader:
-                raise serializers.ValidationError({
-                    'team_leader': 'Team leader is required when assigning to 2 or more users'
-                })
-            
-            # Ensure team leader is one of the assigned users
-            if team_leader not in assigned_to:
+            if not team_leader and assigned_to:
+                data['team_leader'] = assigned_to[0]
+                team_leader = assigned_to[0]
+            # Ensure team leader is one of the assigned users when provided
+            if team_leader and team_leader not in assigned_to:
                 raise serializers.ValidationError({
                     'team_leader': 'Team leader must be one of the assigned users'
                 })
@@ -172,7 +194,7 @@ class ActionLogApprovalSerializer(serializers.Serializer):
         return data
 
 class ActionLogAssignmentHistorySerializer(serializers.ModelSerializer):
-    assigned_by = UserSerializer(read_only=True)
+    assigned_by = MinimalUserSerializer(read_only=True)
     assigned_to = serializers.SerializerMethodField()
 
     class Meta:
@@ -183,25 +205,27 @@ class ActionLogAssignmentHistorySerializer(serializers.ModelSerializer):
     def get_assigned_to(self, obj):
         try:
             users = obj.get_assigned_to_users()
-            return UserSerializer(users, many=True).data
+            return MinimalUserSerializer(users, many=True).data
         except Exception as e:
-            print(f"Error getting assigned_to users: {str(e)}")
             return []
 
     def to_representation(self, instance):
         try:
-            print(f"Serializing assignment history record: {instance.id}")
-            print(f"Assigned by: {instance.assigned_by}")
-            print(f"Assigned to: {[user.id for user in instance.get_assigned_to_users()]}")
-            
             data = super().to_representation(instance)
-            print(f"Serialized data: {data}")
+            # Ensure assigned_by is null-safe (e.g. if FK was deleted despite PROTECT)
+            if data.get('assigned_by') is None and instance.assigned_by_id:
+                data['assigned_by'] = {'id': instance.assigned_by_id, 'first_name': '', 'last_name': '', 'email': ''}
             return data
         except Exception as e:
-            print(f"Error serializing assignment history record {instance.id}: {str(e)}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            raise
+            # Defensive: return minimal data so the endpoint doesn't 500
+            return {
+                'id': instance.id,
+                'action_log': instance.action_log_id,
+                'assigned_by': {'id': getattr(instance, 'assigned_by_id', None), 'first_name': '', 'last_name': '', 'email': ''},
+                'assigned_to': [],
+                'assigned_at': str(instance.assigned_at) if hasattr(instance, 'assigned_at') else None,
+                'comment': getattr(instance, 'comment', None) or '',
+            }
 
 class ActionLogNotificationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -214,11 +238,12 @@ class ActionLogCommentSerializer(serializers.ModelSerializer):
     replies = serializers.SerializerMethodField()
     parent_id = serializers.IntegerField(write_only=True, required=False)
     status = serializers.CharField(read_only=True)
+    is_current_update = serializers.BooleanField(read_only=True, default=False)
 
     class Meta:
         model = ActionLogComment
-        fields = ['id', 'action_log', 'user', 'comment', 'created_at', 'updated_at', 'parent_id', 'replies', 'status']
-        read_only_fields = ['id', 'user', 'created_at', 'updated_at', 'status']
+        fields = ['id', 'action_log', 'user', 'comment', 'created_at', 'updated_at', 'parent_id', 'replies', 'status', 'is_current_update']
+        read_only_fields = ['id', 'user', 'created_at', 'updated_at', 'status', 'is_current_update']
 
     def get_replies(self, obj):
         replies = obj.replies.all().select_related('user').order_by('created_at')
@@ -236,6 +261,8 @@ class ActionLogCommentSerializer(serializers.ModelSerializer):
                 data['is_approved'] = False
             if 'is_viewed' not in data:
                 data['is_viewed'] = False
+            if 'is_current_update' not in data:
+                data['is_current_update'] = getattr(instance, 'is_current_update', False)
             return data
         except Exception as e:
             print(f"Error serializing comment {instance.id}: {str(e)}")

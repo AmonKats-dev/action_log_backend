@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
+from departments.models import Department
 from .models import Role, LoginCode, Delegation
 from .serializers import UserSerializer, RoleSerializer, DelegationSerializer
 from .permissions import IsSuperAdminOrReadOnly, CanManageUsers
@@ -372,6 +373,36 @@ class UserViewSet(viewsets.ModelViewSet):
                 )
             users = User.objects.filter(department_unit=request.user.department_unit)
         
+        serializer = self.get_serializer(users, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def assignable_users(self, request):
+        """Get users from current user's department plus IBP department (for Assigned To display and dropdowns).
+        Used by economist dashboard so logs assigned to IBP Unit users show correct names instead of 'Unassigned'."""
+        user = request.user
+        department_id = request.query_params.get('department')
+        if department_id:
+            try:
+                dept = Department.objects.get(pk=department_id)
+            except (Department.DoesNotExist, ValueError):
+                return Response(
+                    {"error": "Invalid department ID"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            dept = getattr(user, 'department', None)
+            if not dept:
+                return Response(
+                    {"error": "User is not assigned to any department"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        # Users in the given department (e.g. PAP) plus IBP department (so IBP Unit assignees show in Assigned To)
+        dept_ids = [dept.id]
+        ibp_dept = Department.objects.filter(code='IBP').first()
+        if ibp_dept:
+            dept_ids.append(ibp_dept.id)
+        users = User.objects.filter(department_id__in=dept_ids, is_active=True).distinct().order_by('first_name', 'last_name')
         serializer = self.get_serializer(users, many=True)
         return Response(serializer.data)
 
